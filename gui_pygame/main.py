@@ -128,7 +128,99 @@ class HUD:
         if morale_delta:
             self.mor_bar.flash(morale_delta)
 
+# --- Scrollable log panel ---
+class LogPanel:
+    def __init__(self, rect, font, *, bg=PANEL, fg=TEXT, border=WHITE, spacing=4, pad=10):
+        self.rect = pygame.Rect(rect)
+        self.font = font
+        self.bg = bg
+        self.fg = fg
+        self.border = border
+        self.spacing = spacing
+        self.pad = pad
+        self.lines: list[tuple[str, pygame.Color]] = []
+        self.scroll = 0  # pixels from top
+        self._content_h = 0  # total rendered height
 
+        # scroll behavior
+        self.wheel_step = 24   # pixels per wheel "tick"
+        self.auto_follow = True  # stay at bottom when new lines added
+
+    def add_line(self, text: str, color: pygame.Color | None = None):
+        self.lines.append((text, color or self.fg))
+        # Precompute content height
+        self._content_h = 0
+        for t, _ in self.lines:
+            self._content_h += self.font.size(t)[1] + self.spacing
+        self._content_h = max(0, self._content_h - self.spacing)
+
+        # Auto-scroll to bottom when new content arrives
+        if self.auto_follow:
+            self.scroll = max(0, self._content_h - (self.rect.h - 2*self.pad))
+
+    def handle_event(self, event):
+        # Wheel up/down
+        if event.type == pygame.MOUSEWHEEL:
+            # In pygame: positive y = scroll up; negative y = scroll down
+            self.scroll -= event.y * self.wheel_step
+            self._clamp_scroll()
+            # if user scrolls manually, stop auto-follow
+            self.auto_follow = (self.scroll >= self._max_scroll() - 1)
+
+        elif event.type == pygame.KEYDOWN:
+            if event.key in (pygame.K_PAGEUP, pygame.K_UP):
+                self.scroll -= self.wheel_step
+                self._clamp_scroll()
+                self.auto_follow = False
+            elif event.key in (pygame.K_PAGEDOWN, pygame.K_DOWN):
+                self.scroll += self.wheel_step
+                self._clamp_scroll()
+                self.auto_follow = (self.scroll >= self._max_scroll() - 1)
+            elif event.key == pygame.K_END:
+                self.scroll = self._max_scroll()
+                self.auto_follow = True
+            elif event.key == pygame.K_HOME:
+                self.scroll = 0
+                self.auto_follow = False
+
+    def _max_scroll(self):
+        visible_h = self.rect.h - 2*self.pad
+        return max(0, self._content_h - visible_h)
+
+    def _clamp_scroll(self):
+        self.scroll = max(0, min(self.scroll, self._max_scroll()))
+
+    def draw(self, surf):
+        # Panel background
+        pygame.draw.rect(surf, self.bg, self.rect, border_radius=12)
+        pygame.draw.rect(surf, self.border, self.rect, 2, border_radius=12)
+
+        # Viewport (clipped area)
+        clip = surf.get_clip()
+        inner = self.rect.inflate(-2*self.pad, -2*self.pad)
+        surf.set_clip(inner)
+
+        # Draw visible lines
+        y = inner.y - self.scroll
+        for text, color in self.lines:
+            img = self.font.render(text, True, color)
+            # only draw if intersects viewport
+            if y + img.get_height() >= inner.y and y <= inner.bottom:
+                surf.blit(img, (inner.x, y))
+            y += img.get_height() + self.spacing
+
+        surf.set_clip(clip)
+
+        # Scrollbar (tiny indicator on the right)
+        max_scroll = self._max_scroll()
+        if max_scroll > 0:
+            track = pygame.Rect(inner.right + 4, inner.y, 6, inner.h)
+            pygame.draw.rect(surf, (70,70,80), track, border_radius=3)
+            ratio = inner.h / (self._content_h if self._content_h else 1)
+            thumb_h = max(16, int(track.h * ratio))
+            thumb_y = int(track.y + (track.h - thumb_h) * (self.scroll / max_scroll))
+            thumb = pygame.Rect(track.x, thumb_y, track.w, thumb_h)
+            pygame.draw.rect(surf, (200,200,210), thumb, border_radius=3)
 
 # --------------- Small UI helpers ---------------
 class Button:
@@ -254,15 +346,19 @@ class GameScene(Scene):
         self.difficulty = difficulty
         # Start engine run
         self.state = start_run(difficulty)
+
         self.hud = HUD(self.state)
+        self.log_panel = LogPanel((60, 400, WIDTH - 120, 120), FONT_SM)
+
         self.scenario = get_today_scenario(self.state)
         self.outcome_log = []  # last few strings for HUD
         # Buttons
-        self.btn_left  = Button((120, 480, 280, 56), "Left  (←)",  lambda: self.choose("L"))
-        self.btn_right = Button((WIDTH-120-280, 480, 280, 56), "Right (→)", lambda: self.choose("R"))
+        self.btn_left  = Button((120, 540, 280, 48), "Left  (←)",  lambda: self.choose("L"))
+        self.btn_right = Button((WIDTH-120-280, 540, 280, 48), "Right (→)", lambda: self.choose("R"))
 
     # Input handlers
     def handle_event(self, event):
+        self.log_panel.handle_event(event)
         self.btn_left.handle(event)
         self.btn_right.handle(event)
         if event.type == pygame.KEYDOWN:
@@ -281,17 +377,25 @@ class GameScene(Scene):
 
 
         # Build a short line for the on-screen log
-        eff = outcome["effect"]
+        #eff = outcome["effect"]
         result = outcome["result"]
         tag = "✓" if result == "success" else ("×" if result == "failure" else "•")
         line = f"{tag} {outcome['log_text']} (HP {eff['hp']:+}, Food {eff['food']:+}, Morale {eff['morale']:+})"
-        self.outcome_log.append(line)
-        self.outcome_log = self.outcome_log[-6:]  # keep last 6 lines
+        #self.outcome_log.append(line)
+        #self.outcome_log = self.outcome_log[-6:]  # keep last 6 lines
+        color = TEXT
+        if tag == "✓": color = OK
+        elif tag == "×": color = BAD
+
+        self.log_panel.add_line(line, color)
+        # flash bars on deltas
+        #self.hud.flash_from_deltas(eff.get("hp",0), eff.get("food",0), eff.get("morale",0))
 
         # Surprise
         if outcome["surprise"]:
-            self.outcome_log.append(f"★ {outcome['surprise']['text']}")
-            self.outcome_log = self.outcome_log[-6:]
+            #self.outcome_log.append(f"★ {outcome['surprise']['text']}")
+            #self.outcome_log = self.outcome_log[-6:]
+            self.log_panel.add_line(f"★ {outcome['surprise']['text']}", PURPLE)
 
         # Transition?
         if outcome["death"] or outcome["won"]:
@@ -309,8 +413,8 @@ class GameScene(Scene):
 
         # Panels
         pygame.draw.rect(surf, PANEL, (40, 40, WIDTH-80, 120), border_radius=12)     # HUD panel
-        pygame.draw.rect(surf, PANEL, (40, 180, WIDTH-80, 280), border_radius=12)    # Scenario panel
-        pygame.draw.rect(surf, PANEL, (40, 470, WIDTH-80, 90), border_radius=12)     # Buttons panel
+        pygame.draw.rect(surf, PANEL, (40, 180, WIDTH-80, 200), border_radius=12)    # Scenario panel
+        pygame.draw.rect(surf, PANEL, (40, 532, WIDTH-80, 56), border_radius=12)     # Buttons panel
 
         # Header
         head = FONT_LG.render(f"Day {self.state.day}/{self.state.num_days} — {self.difficulty.title()}", True, TEXT)
@@ -328,17 +432,20 @@ class GameScene(Scene):
             surf,
             self.scenario["description"],
             FONT_MD, TEXT,
-            (60, 200, WIDTH-120, 130),
+            (60, 200, WIDTH-120, 120),
         )
         surf.blit(FONT_MD.render("L: " + self.scenario["left_choice"]["text"], True, WHITE), (60, y + 10))
         surf.blit(FONT_MD.render("R: " + self.scenario["right_choice"]["text"], True, WHITE), (60, y + 44))
         surf.blit(FONT_SM.render("Press ← / → or click a button", True, MUTED), (60, y + 74))
 
-        # Buttons
+        # HUD + Log + Buttons
+        self.hud.draw(surf)
+        self.log_panel.draw(surf)
         self.btn_left.draw(surf)
         self.btn_right.draw(surf)
 
-        # Recent outcome log (bottom-left)
+        # Initial block that renders self.outcome_log
+        """
         ly = 470 - 88
         for line in self.outcome_log[-5:]:
             color = TEXT
@@ -348,6 +455,7 @@ class GameScene(Scene):
             img = FONT_SM.render(line, True, color)
             surf.blit(img, (60, ly))
             ly += img.get_height() + 4
+        """
 
 
 class GameOverScene(Scene):
