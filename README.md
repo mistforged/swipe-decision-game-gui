@@ -3,6 +3,7 @@
 A choice-driven survival game with a graphical interface powered by Pygame.  
 The player faces daily scenarios, selects Left or Right choices, and tries to survive while managing HP, Food, and Morale.  
 The GUI uses a separate engine module to keep core game logic independent from rendering.
+
 Upgraded version of previous console project [Swipe-Decision-Game](https://github.com/mistforged/swipe-decision-game)
 
 ! Used ChatGPT for making GUI
